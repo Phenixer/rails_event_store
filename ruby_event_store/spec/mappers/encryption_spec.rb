@@ -30,10 +30,10 @@ module RubyEventStore
       end
     end
 
-    RSpec.describe EncryptionMapper do
+    RSpec.describe Encryption do
       let(:key_repository) { InMemoryEncryptionKeyRepository.new }
       let(:serializer)     { YAML }
-      let(:mapper)         { EncryptionMapper.new(key_repository, serializer: serializer) }
+      let(:mapper)         { Encryption.new(key_repository, serializer: serializer) }
       let(:sender_id)      { SecureRandom.uuid }
       let(:recipient_id)   { SecureRandom.uuid }
       let(:event_id)       { SecureRandom.uuid }
@@ -68,29 +68,31 @@ module RubyEventStore
       end
 
       let(:ticket_transferred) do
-        TicketTransferred.new(
+        TransformationItem.new(
           event_id: event_id,
           data: data,
-          metadata: metadata
+          metadata: metadata,
+          event_type: 'RubyEventStore::Mappers::TicketTransferred'
         )
       end
 
       let(:ticket_cancelled) do
-        TicketCancelled.new(
+        TransformationItem.new(
           event_id: event_id,
           data: {
             ticket_id: ticket_id,
           },
-          metadata: metadata
+          metadata: metadata,
+          event_type: 'RubyEventStore::Mappers::TicketCancelled'
         )
       end
 
       def encrypt(e)
-        mapper.event_to_serialized_record(e)
+        mapper.dump(e)
       end
 
       def decrypt(r)
-        mapper.serialized_record_to_event(r)
+        mapper.load(r)
       end
 
       specify 'decrypts encrypted fields in presence of encryption keys' do
@@ -105,7 +107,7 @@ module RubyEventStore
           sender: sender,
           recipient: recipient
         })
-        expect(event.metadata.to_h).to eq(metadata)
+        expect(event.metadata).to eq(metadata)
       end
 
       specify 'obfuscates data for missing keys on decryption' do
@@ -126,7 +128,7 @@ module RubyEventStore
           },
           recipient: recipient
         })
-        expect(event.metadata.to_h).to eq(metadata)
+        expect(event.metadata).to eq(metadata)
       end
 
       specify 'obfuscates data for incorrect keys on decryption' do
@@ -148,7 +150,7 @@ module RubyEventStore
           },
           recipient: recipient
         })
-        expect(event.metadata.to_h).to eq(metadata)
+        expect(event.metadata).to eq(metadata)
       end
 
       specify 'no-op for events without encryption schema' do
@@ -158,12 +160,12 @@ module RubyEventStore
         expect(event.data).to eq({
           ticket_id: ticket_id
         })
-        expect(event.metadata.to_h).to eq(metadata)
+        expect(event.metadata).to eq(metadata)
       end
 
       specify 'no encryption metadata without encryption schema' do
         record = encrypt(ticket_cancelled)
-        expect(serializer.load(record.metadata)).to eq(metadata)
+        expect(record.metadata).to eq(metadata)
       end
 
       specify 'raises error on encryption with missing encryption key' do
@@ -191,29 +193,30 @@ module RubyEventStore
         key_repository.create(recipient_id)
 
         record   = encrypt(ticket_transferred)
-        data     = serializer.load(record.data)
-        metadata = serializer.load(record.metadata)
+        data     = record.data.dup
+        metadata = record.metadata.dup
         decrypt(record)
 
-        expect(serializer.load(record.data)).to     eq(data)
-        expect(serializer.load(record.metadata)).to eq(metadata)
+        expect(record.data).to     eq(data)
+        expect(record.metadata).to eq(metadata)
       end
 
       specify 'two cryptograms of the same input and key are not alike' do
         key_repository.create(sender_id)
 
         record = encrypt(
-          TicketTransferred.new(
+          TransformationItem.new(
             event_id: event_id,
             data: {
               ticket_id: ticket_id,
               sender: sender,
               recipient: sender
             },
-            metadata: metadata
+            metadata: metadata,
+            event_type: 'RubyEventStore::Mappers::TicketTransferred'
           )
         )
-        data = serializer.load(record.data)
+        data = record.data
 
         expect(data.dig(:sender, :name)).not_to  eq(data.dig(:recipient, :name))
         expect(data.dig(:sender, :email)).not_to eq(data.dig(:recipient, :email))
@@ -222,17 +225,18 @@ module RubyEventStore
       specify 'handles non-nested encryption schema' do
         key_repository.create(sender_id)
 
-        event = 
+        event =
           decrypt(
             encrypt(
-              TicketHolderEmailProvided.new(
+              TransformationItem.new(
                 event_id: event_id,
                 data: {
                   ticket_id: ticket_id,
                   user_id: sender_id,
                   email: sender_email
                 },
-                metadata: metadata
+                metadata: metadata,
+                event_type: 'RubyEventStore::Mappers::TicketHolderEmailProvided'
               )
             )
           )
@@ -243,7 +247,7 @@ module RubyEventStore
           user_id: sender_id,
           email: sender_email
         })
-        expect(event.metadata.to_h).to eq(metadata)
+        expect(event.metadata).to eq(metadata)
       end
 
       specify 'handles non-string values' do
@@ -252,14 +256,15 @@ module RubyEventStore
         event =
           decrypt(
             encrypt(
-              TicketHolderEmailProvided.new(
+              TransformationItem.new(
                 event_id: event_id,
                 data: {
                   ticket_id: ticket_id,
                   user_id: sender_id,
                   email: [sender_email]
                 },
-                metadata: metadata
+                metadata: metadata,
+                event_type: 'RubyEventStore::Mappers::TicketHolderEmailProvided'
               )
             )
           )
@@ -270,7 +275,7 @@ module RubyEventStore
           user_id: sender_id,
           email: [sender_email]
         })
-        expect(event.metadata.to_h).to eq(metadata)
+        expect(event.metadata).to eq(metadata)
       end
 
       specify 'no-op for nil value' do
@@ -278,14 +283,15 @@ module RubyEventStore
 
         record =
           encrypt(
-            TicketHolderEmailProvided.new(
+            TransformationItem.new(
               event_id: event_id,
               data: {
                 ticket_id: ticket_id,
                 user_id: sender_id,
                 email: nil
               },
-              metadata: metadata
+              metadata: metadata,
+              event_type: 'RubyEventStore::Mappers::TicketHolderEmailProvided'
             )
           )
         event = decrypt(record)
@@ -296,21 +302,21 @@ module RubyEventStore
           user_id: sender_id,
           email: nil
         })
-        expect(serializer.load(record.data)).to eq(event.data)
-        expect(event.metadata.to_h).to eq(metadata)
+        expect(record.data).to eq(event.data)
+        expect(event.metadata).to eq(metadata)
       end
 
       specify 'defaults' do
         key_repository.create(sender_id)
         key_repository.create(recipient_id)
         record =
-          EncryptionMapper
+          Encryption
             .new(key_repository)
-            .event_to_serialized_record(ticket_transferred)
+            .dump(ticket_transferred)
         event =
-          EncryptionMapper
+          Encryption
             .new(key_repository)
-            .serialized_record_to_event(record)
+            .load(record)
 
         expect(event).to  eq(ticket_transferred)
       end
@@ -330,7 +336,7 @@ module RubyEventStore
             sender: sender,
             recipient: recipient
           })
-          expect(event.metadata.to_h).to eq(metadata)
+          expect(event.metadata).to eq(metadata)
         end
       end
 
@@ -357,7 +363,7 @@ module RubyEventStore
             sender: sender,
             recipient: recipient
           })
-          expect(event.metadata.to_h).to eq(metadata)
+          expect(event.metadata).to eq(metadata)
         end
       end
 
